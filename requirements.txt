@@ -1,0 +1,14 @@
+
+numpy
+scipy
+matplotlib
+pandas
+shapely
+plotly
+moviepy
+networkx
+pyproj
+pytest
+fastapi
+uvicorn
+moviepy

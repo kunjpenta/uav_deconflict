@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+.venv/
+venv/
+
+# Data outputs / temp
+*.mp4
+*.png
+*.html
+outputs/
+deliverables/
+animation.mp4
+demo_paths.png
+report.json
+
+# VSCode / IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,762 @@
+Task 1 — Project bootstrap & environment (local-only)
+
+Goal: Create a clean local project skeleton and reproducible Python environment.
+
+Why: Keeps code modular, repeatable, and easy to run for simulation + visualization.
+
+Steps
+
+Create project folder:
+
+mkdir -p ~/uav_deconflict && cd ~/uav_deconflict
+
+Create a Python virtual environment and activate it:
+
+python3 -m venv .venv
+
+source .venv/bin/activate
+
+Create minimal folder structure:
+
+uav_deconflict/
+  src/
+    deconflict/
+      __init__.py
+      io.py
+      models.py
+      traject.py
+      spatial.py
+      temporal.py
+      analyzer.py
+      visualize.py
+  data/
+    sample_primary_mission.json
+    sample_simulated_flights.json
+  tests/
+    test_spatial.py
+    test_temporal.py
+  run_demo.py
+  requirements.txt
+  README.md
+
+
+Populate requirements.txt with packages to install:
+
+Minimal: numpy, scipy, matplotlib, pandas
+
+Useful extras: shapely (geometry), networkx (optional), pyproj (if using lat/lon), plotly (3D/interactive), moviepy or ffmpeg (to write video)
+
+Example requirements.txt line:
+
+numpy
+scipy
+matplotlib
+pandas
+shapely
+plotly
+moviepy
+
+
+Install requirements:
+
+pip install -r requirements.txt
+
+Create an entry script run_demo.py that imports modules and runs a small scenario.
+
+Files to create
+
+README.md with a short "how to run locally" section.
+
+data/sample_primary_mission.json (one short mission example)
+
+data/sample_simulated_flights.json (2–3 simple simulated flights)
+
+Quick tests
+
+Run Python and import package:
+python -c "import deconflict; print('OK')"
+
+Deliverable after Task 1
+
+Local project skeleton, virtualenv, installed dependencies, and two sample JSON files.
+
+Task 2 — Data model and input formats
+
+Goal: Define formal, simple JSON/Python structures for missions and simulated flights. Implement io.py to read/write them.
+
+Why: Consistent data model simplifies interpolation, checks, visualization, and testing.
+
+Data model (suggested)
+
+Primary mission (file sample_primary_mission.json):
+
+{
+  "mission_id": "P001",
+  "time_window": { "start": "2025-11-20T09:00:00", "end": "2025-11-20T09:15:00" },
+  "waypoints": [
+    {"id":"wp1","x":0.0,"y":0.0,"z":100.0},
+    {"id":"wp2","x":2000.0,"y":0.0,"z":100.0},
+    {"id":"wp3","x":2000.0,"y":2000.0,"z":120.0}
+  ],
+  "constraints": { "max_speed_mps": 20.0 }
+}
+
+
+Simulated flights (sample_simulated_flights.json) — list of flights:
+
+[
+  {
+    "flight_id":"S001",
+    "waypoints":[
+      {"t":"2025-11-20T09:02:00","x":1500,"y":-500,"z":100},
+      {"t":"2025-11-20T09:08:00","x":1500,"y":2500,"z":100}
+    ],
+    "metadata": { "cruise_speed": 15.0 }
+  },
+  { "flight_id": "S002", ... }
+]
+
+
+(You may choose absolute timestamps for simulated flights, or waypoint-relative times — we’ll support absolute timestamps first.)
+
+Steps
+
+Implement src/deconflict/io.py with functions:
+
+load_primary(path) -> PrimaryMission
+
+load_simulated_flights(path) -> List[SimFlight]
+
+save_conflict_report(report, path)
+
+Implement src/deconflict/models.py with dataclasses (or simple classes):
+
+Waypoint(x,y,z=None, t=None, id=None)
+
+PrimaryMission(mission_id, waypoints, start, end, constraints)
+
+SimulatedFlight(flight_id, waypoints, metadata)
+
+Add basic validation (timestamps parseable, x/y numeric, start < end, at least 2 waypoints).
+
+Files to create/modify
+
+src/deconflict/io.py
+
+src/deconflict/models.py
+
+Tests
+
+tests/test_io.py (read the sample JSON and assert types, time parsing, start<end)
+
+Run: python -m pytest tests/test_io.py (or python tests/test_io.py with simple asserts)
+
+Deliverable after Task 2
+
+Working loader & models: you can load primary mission and simulated flights into Python objects ready for processing.
+
+Task 3 — Trajectory generation & time-parameterization
+
+Goal: Convert waypoints into continuous, time-parameterized trajectories (position as function of time) for the primary mission and simulated flights. Support linear interpolation by default.
+
+Why: To check spatio-temporal conflicts you need to know where each drone is at any time t.
+
+Steps
+
+Decide interpolation approach:
+
+Option A (simple): Linear interpolation between consecutive waypoints with constant speed segments. Use times: primary mission's overall window + user-specified desired average speed or per-segment speed. For simulated flights, take absolute waypoint times if provided.
+
+Option B (advanced): Use cubic spline or constant-accel profiles (optional later).
+
+Implement src/deconflict/traject.py with:
+
+Trajectory class that stores times array and positions array (Nx3).
+
+interpolate_from_waypoints(waypoints, method='linear', mission_window=None, max_speed=None) -> Trajectory
+
+sample_position_at(t) -> (x,y,z) (efficient via numpy interp)
+
+time_range() -> (t0, t1)
+
+Deal with time formats — convert ISO strings to Python datetime and then to floats (seconds since epoch or seconds from mission start).
+
+Provide helper to create a uniform time sample vector for each flight (e.g., sample every 0.5s or 1s). Make sampling resolution configurable.
+
+Files to create/modify
+
+src/deconflict/traject.py
+
+Tests
+
+tests/test_trajectory.py:
+
+Create 2-waypoint mission, generate trajectory, sample mid-time and assert position is midpoint.
+
+Ensure time sampling respects mission window and max_speed constraints.
+
+Deliverable after Task 3
+
+Time-parameterized trajectory objects for all flights, with sampling functions.
+
+Task 4 — Spatial conflict detection (2D / buffer-based)
+
+Goal: Implement spatial-only conflict detection: whether two trajectories come within a minimum safety distance (buffer) ignoring time.
+
+Why: Quickly identifies obvious path intersections or near-misses; baseline for 2D checks.
+
+Approach
+
+For 2D baseline, ignore time and altitude (or use projected XY distance).
+
+Use either:
+
+Shapely: convert trajectory polyline to LineString and buffer by safety radius; check intersects.
+
+Numeric approach: sample positions at decent resolution and compute pairwise distances using numpy — more direct and easy to extend to 3D.
+
+Steps
+
+Implement src/deconflict/spatial.py with:
+
+check_spatial_conflict(traj_A:Trajectory, traj_B:Trajectory, buffer_m:float, use_3d:bool=False) -> bool, details
+
+closest_approach(traj_A, traj_B) -> (min_dist, tA_at_min, tB_at_min, posA, posB)
+
+For numeric solution:
+
+Sample both trajectories at a common time grid (or densely sample by path length).
+
+Compute Euclidean distances; find minimum distance and location(s) where dist < buffer.
+
+For shapely solution (2D only):
+
+Convert XY polyline to LineString, buffer by buffer_m, and check intersection with other line.
+
+Outputs
+
+Boolean (conflict/no conflict)
+
+details dict with:
+
+min_distance_m
+
+points or positions where min occurred
+
+times (if applicable)
+
+which flights involved
+
+Files to create/modify
+
+src/deconflict/spatial.py
+
+Tests
+
+tests/test_spatial.py:
+
+Two perpendicular paths that cross: expect conflict with min_distance ~0 at intersection.
+
+Parallel tracks separated by > buffer: expect no conflict.
+
+Deliverable after Task 4
+
+Spatial-only conflict checker returning distances and locations of minimal approach.
+
+Task 5 — Temporal overlap & full spatio-temporal check (2D and optional 3D)
+
+Goal: Combine time and spatial checks into a spatio-temporal deconfliction function. For every overlapping time interval, ensure the separation > safety buffer. Return conflict explanation when violations exist.
+
+Why: This is the core: a mission is only unsafe if another drone is in the critical space at the same time.
+
+Algorithm (practical & robust)
+
+For each simulated flight S:
+
+Determine overlap of time ranges between Primary and S:
+
+overlap_start = max(primary.t0, s.t0)
+
+overlap_end = min(primary.t1, s.t1)
+
+If overlap_end <= overlap_start: no temporal overlap → skip
+
+For overlapping interval:
+
+Create a time grid t_grid = np.arange(overlap_start, overlap_end, dt) using dt small enough (e.g., 0.5s–2s depending on mission speeds). Make dt configurable.
+
+Sample pos_primary = primary.sample_position_at(t_grid) and pos_s = s.sample_position_at(t_grid).
+
+Compute distances: dists = np.linalg.norm(pos_primary - pos_s, axis=1) (2D or 3D as requested).
+
+Flag indices where dists < safety_buffer.
+
+If any flagged times:
+
+Build detailed conflict entry:
+
+{
+  "flight_id": "S001",
+  "conflict_times": [<iso timestamps or seconds>],
+  "conflict_positions": [{ "primary": (x,y,z), "sim": (x,y,z) }],
+  "min_distance_m": <value>,
+  "time_of_min": <timestamp>,
+  "explanation": "At {time} primary and S001 within {d}m at location {latlon}"
+}
+
+
+Aggregate across all simulated flights. If none produce conflicts → return "clear".
+
+Implementation
+
+Add src/deconflict/temporal.py with:
+
+check_spatiotemporal_conflicts(primary_traj, sim_trajs, safety_buffer_m, dt=1.0, use_3d=False) -> dict(status, conflicts)
+
+format_conflict_report(conflicts) -> JSON-ready dict or human-readable string
+
+Add convenience wrapper in analyzer.py:
+
+analyze_mission(primary_mission_json, simulated_json, safety_buffer, dt) -> (status, report)
+
+Edge cases to handle
+
+Non-overlapping time windows (skip)
+
+Simulated flights with sparse timepoints (interpolate)
+
+Primary mission with unknown per-waypoint times — evenly distribute mission time window among segments if needed
+
+Altitude differences: if use_3d=True include z in distance calc; optionally use separate vertical buffer
+
+Tests
+
+tests/test_temporal.py:
+
+Create two flights that cross in space but at different times → expect clear
+
+Create two flights that cross in space and time → expect conflict with proper time reported
+
+Verify that the reported min_distance is less than safety buffer and that the timestamp matches the sampling resolution.
+
+Files to create/modify
+
+src/deconflict/temporal.py
+
+src/deconflict/analyzer.py (glue code)
+
+Deliverable after Task 5
+
+A function you can call locally (from run_demo.py) that reads primary and simulated flights, runs the spatio-temporal conflict check, and prints either CLEAR or a structured conflict report with times/locations/flights.
+
+Quick note about tech choices — Python vs Django (and other tech)
+
+Python: Essential. Use it for everything: data ingestion, trajectory math, conflict logic, tests, and visualization. All tasks above assume Python.
+
+Django: Optional. Only useful if you want to build a web-based query interface (HTTP API, web dashboard, login, persistent DB). For this assignment, if you must deliver quickly and run everything locally, Django is not necessary. Simpler options:
+
+CLI / scripts (recommended for initial development).
+
+Flask / FastAPI (recommended minimal web API if you want a local web UI quickly; FastAPI is great for JSON APIs).
+
+Django is overkill unless you want a full web app and persistence or user management; it will increase the workload.
+
+Visualization: Use matplotlib (2D static/animation) and/or plotly (interactive 3D + time sliders). To produce a voiceover video, generate mp4s with matplotlib.animation or plotly+orca/kaleido, then combine voiceover with moviepy or ffmpeg.
+
+Geometry libraries: shapely is very helpful for 2D geometry operations. For geodetic (lat/lon), use pyproj for projection to metric XY.
+
+Testing: Use pytest or plain unittest. Keep tests local.
+
+If this looks good I’ll continue with Tasks 6–10 (detailed: visualization, animation & video export, CLI/API, tests & QA, documentation + reflection). Want me to proceed?
+
+
+
+
+Tasks 6–10 (detailed)
+
+Nice — great progress. Here are Tasks 6 → 10, written with the same level of detail as before. Each task includes: goal, why, concrete steps, files/functions to create, quick tests, and expected deliverable. Stick to local-only development and Python tools you already have in your project.
+
+Task 6 — Visualization: static plots, interactive plots, and 2D animations
+
+Goal: Build visualization utilities that (a) draw 2D mission and simulated flights, (b) produce animations showing trajectories over time, and (c) produce an interactive view (optional) for exploring scenarios.
+
+Why: Visuals are essential to validate and demonstrate conflicts clearly and for making the demo video.
+
+Steps
+
+Design API: Add functions in src/deconflict/visualize.py:
+
+plot_static_2d(primary_traj, sim_trajs, buffer_m=None, show=True, save_path=None)
+Draws XY paths; mark waypoints, show buffer circles at conflict points if provided. Legend, axis labels, and timestamps.
+
+animate_2d(primary_traj, sim_trajs, conflicts=None, dt_display=0.5, duration_clip=None, save_path=None)
+Produce an animation (matplotlib FuncAnimation) that moves drone markers along their trajectories and highlights conflict frames (red markers/patches).
+
+plot_interactive_3d(primary_traj, sim_trajs, conflict_events=None, save_html=None)
+Use Plotly to create an interactive 3D plot with time slider (time mapped to a frame index). Save to HTML for local viewing.
+
+Matplotlib Static Plot Details:
+
+Plot primary in bold (e.g., thick line) and simulated flights in dashed lines.
+
+Mark start/end times on the paths (annotate with ISO timestamps).
+
+If buffer_m or conflicts given, draw circles (or filled patches) around conflict positions showing safety buffer.
+
+Save with high DPI for video cropping.
+
+Matplotlib Animation:
+
+Create a time grid covering min(t0) → max(t1) across all flights with step dt_display.
+
+At each frame: compute positions and update scatter plot points and a trailing line (history).
+
+When a frame corresponds to a conflict time (use conflict report), flash red halo / enlarge marker and add a text annotation with flight IDs and distance.
+
+Use FuncAnimation and animation.save() to write an MP4 (requires ffmpeg installed).
+
+Provide a fallback to save as series of PNGs if ffmpeg not available.
+
+Plotly Interactive 3D:
+
+Build traces for each flight: entire path (line) + moving marker (frame by frame).
+
+Add time slider using Plotly frames. Create hover text with time & flight_id.
+
+Save to output/interactive_3d.html so it can be opened locally.
+
+Files to create/modify
+
+src/deconflict/visualize.py (functions above).
+
+run_demo.py update to call plot_static_2d and animate_2d.
+
+data/visual_examples/ to store generated media (PNGs, MP4s, HTML).
+
+Quick tests
+
+Run: python run_demo.py --scenario sample_conflict and expect:
+
+visual_examples/static_conflict.png generated
+
+visual_examples/anim_conflict.mp4 generated (or frames/*.png)
+
+visual_examples/interactive_3d.html when using 3D mode
+
+Open images and HTML locally to verify correctness.
+
+Notes on performance
+
+For long missions or many simulated flights, downsample the time grid for animation or only animate the conflict window to keep runtime reasonable.
+
+Deliverable after Task 6
+
+Static PNG(s), an MP4 animation (or PNG sequence), and an interactive HTML showing trajectories and highlighted conflicts.
+
+Task 7 — User Interface: CLI and local API (FastAPI optional)
+
+Goal: Provide a simple local interface for queries: (A) a command-line interface that accepts a primary mission JSON and prints a conflict report; (B) optionally a small local REST API (FastAPI) to accept JSON and return results for quick integration or local web UI.
+
+Why: Makes the system easier to test, demo, and integrate into other local tools or the demo video flow.
+
+Steps
+
+CLI:
+
+Add src/cli.py with a main() that uses argparse:
+
+uav-run --primary data/sample_primary_mission.json --sim data/sample_simulated_flights.json --buffer 50 --dt 1.0 --out report.json --animate
+
+CLI responsibilities:
+
+Load inputs using io.py
+
+Generate trajectories using traject.py
+
+Run analysis analyzer.analyze_mission(...)
+
+Print status: "CLEAR" or "CONFLICT DETECTED" with short summary
+
+Save full JSON report to --out
+
+Optionally call visualize.animate_2d and save visual artifacts to a folder
+
+Local REST API (FastAPI) — optional but useful:
+
+Add dependency to requirements.txt: fastapi + uvicorn
+
+Create src/server.py with endpoints:
+
+POST /check — accepts JSON body with primary and simulated_flights (same schema as files). Returns {status: 'clear'|'conflict', report: {...}}
+
+GET /health — simple health check.
+
+Add GET /static/visual/<name> to serve generated images/HTML for preview.
+
+Start with uvicorn src.server:app --reload --port 8000
+
+For demo: call with curl -X POST http://127.0.0.1:8000/check -d @data/sample_payload.json -H "Content-Type: application/json"
+
+Files to create/modify
+
+src/cli.py
+
+src/server.py (optional)
+
+Update README.md with CLI and server usage instructions.
+
+Quick tests
+
+CLI: python -m src.cli --primary data/sample_primary_mission.json --sim data/sample_simulated_flights.json --buffer 30
+
+API: curl test as above → expect JSON status and report.
+
+Security note
+
+Since this runs locally only, keep server unexposed or bind to 127.0.0.1. No auth required for local demos.
+
+Deliverable after Task 7
+
+A CLI that can run analysis and produce artifacts; a local REST API if you choose to enable it.
+
+Task 8 — Testing, QA, and automated scenario runner
+
+Goal: Build a comprehensive test suite and an automated scenario-runner that executes multiple missions (conflict-free, conflict, edge-cases) producing reports + visuals for each case. This supports reliability and the demo video production.
+
+Why: Demonstrates test coverage, reproducibility, and eases producing multiple demo scenarios.
+
+Steps
+
+Unit tests
+
+Expand tests/:
+
+test_io.py (already)
+
+test_trajectory.py (already)
+
+test_spatial.py (already)
+
+test_temporal.py (already)
+
+New: test_visualize.py — ensure plotting functions run without exceptions (render to temp files).
+
+Use pytest and assert expected boolean outcomes and numerical tolerances (e.g., min_distance < 1e-6 for exact intersection).
+
+Integration tests
+
+Add tests/test_end_to_end.py which:
+
+Loads sample_primary_mission.json and sample_simulated_flights.json
+
+Runs the CLI analysis function programmatically (import and call)
+
+Asserts status equals expected for the scenario
+
+Confirms that the visualization files exist
+
+Scenario runner
+
+Create folder scenarios/ with multiple JSONs:
+
+scenario_conflict_01.json, scenario_clear_01.json, scenario_edge_altitude.json, scenario_late_overlap.json
+
+Add scripts/run_all_scenarios.py:
+
+Iterates scenarios, runs analysis, collects reports to outputs/{scenario_name}/report.json, generates visuals outputs/{scenario_name}/...
+
+Generates a summary CSV outputs/summary.csv listing scenario, status, min_distance, time_of_min, etc.
+
+Automated local test command
+
+Add make-like script in Makefile or scripts/run_tests.sh:
+
+./scripts/run_tests.sh -> pytest -q and then python scripts/run_all_scenarios.py
+
+Edge-case tests to include
+
+Very short missions (< dt), overlapping time windows but no spatial overlap
+
+Altitude-separated flights (3D check)
+
+Sparse simulated flight waypoints (long interpolation segments)
+
+Simulated flights with identical time windows but offset by a fraction of dt
+
+Files to create/modify
+
+tests/* as above
+
+scripts/run_all_scenarios.py
+
+Makefile or scripts/run_tests.sh
+
+Quick tests
+
+Run pytest and ensure all tests pass.
+
+Run scripts/run_all_scenarios.py and verify outputs/ populated with reports and visuals.
+
+Deliverable after Task 8
+
+Full unit & integration tests, scenario runner that produces reproducible outputs for the demo.
+
+Task 9 — Documentation, reflection draft, and demo script
+
+Goal: Produce the deliverable docs: a README for running locally, and the Reflection & Justification document (1–2 pages). Prepare a script/shot-list for the 3–5 minute demo video with voiceover points.
+
+Why: Required deliverables; a good script ensures a clean, focused demo and reduces re-takes.
+
+Steps
+
+README.md (update or expand)
+
+Quick start (virtualenv creation, pip install -r requirements.txt)
+
+How to run examples:
+
+CLI examples to run conflict and clear scenarios
+
+How to run server (if used)
+
+Where outputs are written
+
+How to run tests: pytest
+
+How to generate video assets: python run_demo.py --scenario scenario_conflict_01 --animate
+
+Troubleshooting tips (ffmpeg missing, Plotly offline mode etc.)
+
+Reflection & Justification (1–2 pages) — create docs/reflection.md (or .pdf)
+
+Sections:
+
+Design summary & architecture (modules: io, models, traject, spatial, temporal, analyzer, visualize, cli/api)
+
+Spatial and temporal check details — algorithms used, sampling choices, interpolation, buffer logic
+
+AI usage: (since you’re using ChatGPT only) describe how you used ChatGPT to help scaffold code, produce test cases, optimize interpolation logic, and generate visualization snippets (be specific: e.g., “used ChatGPT to draft matplotlib animation loop and then refined it to support conflict flashing”)
+
+Testing strategy & edge cases
+
+Scalability discussion (short bullets: spatial indexing, partitioning airspace, distributed stream processing, persistent storage, latency targets, conflict resolution policy)
+
+Limitations & future improvements (e.g., uncertain trajectories, probabilistic separation, dynamic re-planning)
+
+Demo shot-list & voiceover script
+
+Prepare docs/demo_script.md with timestamps and screenshots to capture in the video:
+
+0:00–0:20 — Title slide & short system objective (voiceover)
+
+0:20–0:40 — CLI: run a clear scenario (show output CLEAR) (voiceover: explain mission & time window)
+
+0:40–1:20 — Conflict scenario: show static plot with highlighted conflict (voiceover: explain conflict details and show report)
+
+1:20–2:10 — Play animation of conflict showing flashing markers and time annotation (voiceover: explain how time sampling detected the conflict and what buffer was violated)
+
+2:10–2:50 — Open interactive 3D view or show altitude-separated example (extra credit) (voiceover: describe 4D visualization)
+
+2:50–3:20 — Describe testing & scalability plan (voiceover)
+
+3:20–3:30 — Closing remarks & how to run locally (voiceover)
+
+Add exact CLI commands to run for each shot to avoid fumbling.
+
+Files to create/modify
+
+README.md (update)
+
+docs/reflection.md
+
+docs/demo_script.md
+
+Quick tests
+
+Dry-run the demo locally: follow shot-list, produce visuals and ensure times/annotations match script.
+
+Deliverable after Task 9
+
+README, a 1–2 page reflection document, and a shot-by-shot demo script you can read as voiceover.
+
+Task 10 — Video production, voiceover, and packaging final deliverables
+
+Goal: Produce the final 3–5 minute demonstration video with voiceover, combine visuals and voice, and package everything into a local deliverable folder.
+
+Why: The video is a major evaluation item — make it concise and polished.
+
+Steps
+
+Record visuals
+
+Use the artifacts created by Task 6 (MP4 animation, static PNGs, interactive HTML screenshots).
+
+If you need screen recordings (demoing CLI or server), use your OS screen recorder or ffmpeg with x11grab (Linux).
+
+Keep each shot short (10–40 seconds) as per demo script.
+
+Record voiceover
+
+Use Audacity or a simple microphone + arecord/sox to record narration reading the docs/demo_script.md. Save as .wav.
+
+Record in a quiet room; do 2 takes if needed.
+
+Assemble video
+
+Use moviepy (Python) or ffmpeg to combine visuals and voiceover:
+
+moviepy pipeline: load clips, add narration audio track, add transitions/text overlays (title, timestamps), and export MP4 at 1080p.
+
+Example moviepy flow (in scripts/make_demo_video.py):
+
+from moviepy.editor import VideoFileClip, AudioFileClip, concatenate_videoclips, TextClip, CompositeVideoClip
+# load clips, create text overlays, concatenate, set audio, write_videofile(...)
+
+
+If you prefer ffmpeg: combine audio + video with ffmpeg -i video.mp4 -i voice.wav -c:v copy -c:a aac -shortest out.mp4. Use -filter_complex for overlays.
+
+Add captions / callouts
+
+Add short overlay text identifying scenario and conflict details when conflict frames appear. Use moviepy TextClip or ffmpeg drawtext.
+
+Export and QA
+
+Export final MP4 deliverables/uav_deconflict_demo.mp4 (3–5 minutes).
+
+Watch the entire video and verify sync between narration and visuals.
+
+Package deliverables
+
+Create deliverables/ folder containing:
+
+uav_deconflict_demo.mp4
+
+docs/reflection.md
+
+README.md
+
+outputs/ with scenario reports and visuals
+
+src/ (the code)
+
+requirements.txt
+
+scripts/run_all_scenarios.py
+
+Optionally create a zip: zip -r uav_deconflict_package.zip deliverables/
+
+Files to create/modify
+
+scripts/make_demo_video.py
+
+deliverables/ folder
+
+Quick tests
+
+Play deliverables/uav_deconflict_demo.mp4 locally — verify all shots and audio quality.
+
+Confirm zip contains everything and that README has clear instructions for running locally.
+
+Deliverable after Task 10
+
+Final demo video MP4, packaged deliverables folder (or zip), and instructions for a reviewer to run the project locally.
